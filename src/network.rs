@@ -1,3 +1,5 @@
+use core::fmt::Write;
+
 use cortex_m;
 use stm32f4_smoltcp::EthernetDevice;
 use smoltcp::{self, time::Instant, wire::{EthernetAddress, IpAddress, IpCidr}};
@@ -80,6 +82,21 @@ pub fn poll(time_ms: i64) {
         }
 
         let sockets = NETWORK.sockets.as_mut().unwrap();
+
+        // Handle TCP
+        {
+            let mut socket = sockets.get::<TcpSocket>(NETWORK.tcp_handle.unwrap());
+            if !socket.is_open() {
+                socket.listen(23).unwrap();
+            }
+            if !socket.may_recv() && socket.may_send() {
+                socket.close();
+            }
+            if socket.can_recv() {
+                write!(socket, "Hello, World!\r\n");
+                socket.close();
+            }
+        }
 
         // Poll smoltcp
         let timestamp = Instant::from_millis(time_ms);
