@@ -92,7 +92,7 @@ pub fn poll(time_ms: i64) {
             if !socket.may_recv() && socket.may_send() {
                 socket.close();
             }
-            if socket.can_recv() {
+            if socket.can_send() {
                 write!(socket, "Hello, World!\r\n");
                 socket.close();
             }
