@@ -10,8 +10,7 @@ cortex-m-rt = "0.6.4"
 panic-abort = "0.2.0"
 
 [dependencies.smoltcp]
-git = "https://github.com/m-labs/smoltcp"
-rev = "ef014b118b19d2c4e9218be6ab52ffe4c2aecff3"
+version = "0.5.0"
 default-features = false
 features = ["proto-ipv4", "socket-tcp"]
 
