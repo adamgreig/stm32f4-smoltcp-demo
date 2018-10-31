@@ -24,3 +24,6 @@ path = "../stm32f4-smoltcp"
 [profile.release]
 codegen-units = 1
 incremental = false
+debug = true
+opt-level = "s"
+lto = true
