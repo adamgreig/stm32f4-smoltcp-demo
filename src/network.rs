@@ -1,10 +1,14 @@
 use core::fmt::Write;
 
 use cortex_m;
+use smoltcp::iface::{EthernetInterface, EthernetInterfaceBuilder, Neighbor, NeighborCache};
+use smoltcp::socket::{SocketHandle, SocketSet, SocketSetItem, TcpSocket, TcpSocketBuffer};
+use smoltcp::{
+    self,
+    time::Instant,
+    wire::{EthernetAddress, IpAddress, IpCidr},
+};
 use stm32f4_smoltcp::EthernetDevice;
-use smoltcp::{self, time::Instant, wire::{EthernetAddress, IpAddress, IpCidr}};
-use smoltcp::iface::{Neighbor, NeighborCache, EthernetInterface, EthernetInterfaceBuilder};
-use smoltcp::socket::{SocketSet, SocketSetItem, SocketHandle, TcpSocket, TcpSocketBuffer};
 
 struct NetworkBuffers {
     tcp_tx_buf: [u8; 1536],
@@ -54,11 +58,13 @@ pub fn init<'a>(eth_dev: EthernetDevice, mac_addr: EthernetAddress, ip_addr: IpC
         let neighbor_cache = NeighborCache::new(&mut NETWORK.neighbor_cache_storage.as_mut()[..]);
 
         NETWORK.ip_addr = Some([ip_addr]);
-        NETWORK.eth_iface = Some(EthernetInterfaceBuilder::new(eth_dev)
-                                .ethernet_addr(mac_addr)
-                                .neighbor_cache(neighbor_cache)
-                                .ip_addrs(&mut NETWORK.ip_addr.as_mut().unwrap()[..])
-                                .finalize());
+        NETWORK.eth_iface = Some(
+            EthernetInterfaceBuilder::new(eth_dev)
+                .ethernet_addr(mac_addr)
+                .neighbor_cache(neighbor_cache)
+                .ip_addrs(&mut NETWORK.ip_addr.as_mut().unwrap()[..])
+                .finalize(),
+        );
 
         NETWORK.sockets = Some(SocketSet::new(&mut NETWORK.sockets_storage.as_mut()[..]));
         let tcp_rx_buf = TcpSocketBuffer::new(&mut NETWORK_BUFFERS.tcp_rx_buf.as_mut()[..]);
@@ -71,7 +77,7 @@ pub fn init<'a>(eth_dev: EthernetDevice, mac_addr: EthernetAddress, ip_addr: IpC
 /// Poll network stack.
 ///
 /// Arrange for this function to be called frequently.
-pub fn poll(time_ms: i64) {
+pub fn poll(time_ms: u32) {
     // Unsafe required to access static mut NETWORK.
     // Since the entire poll is run in an interrupt-free context no
     // other access to NETWORK can occur.
@@ -92,14 +98,14 @@ pub fn poll(time_ms: i64) {
             if !socket.may_recv() && socket.may_send() {
                 socket.close();
             }
-            if socket.can_send() {
-                write!(socket, "Hello, World!\r\n");
+            if socket.can_recv() {
+                let _ = socket.write_str("Hello, World!\r\n");
                 socket.close();
             }
         }
 
         // Poll smoltcp
-        let timestamp = Instant::from_millis(time_ms);
+        let timestamp = Instant::from_millis(i64::from(time_ms));
         match NETWORK.eth_iface.as_mut().unwrap().poll(sockets, timestamp) {
             Ok(_) | Err(smoltcp::Error::Exhausted) => (),
             Err(_) => (),

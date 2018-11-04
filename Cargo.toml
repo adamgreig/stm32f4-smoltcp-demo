@@ -5,17 +5,17 @@ authors = ["Adam Greig <adam@adamgreig.com>"]
 edition = "2018"
 
 [dependencies]
-cortex-m = "0.5.7"
-cortex-m-rt = "0.6.4"
-panic-abort = "0.2.0"
+cortex-m = "0.5.8"
+cortex-m-rt = "0.6.5"
+panic-abort = "0.3.1"
 
 [dependencies.smoltcp]
 version = "0.5.0"
 default-features = false
 features = ["proto-ipv4", "socket-tcp"]
 
-[dependencies.stm32f4]
-version = "0.3.2"
+[dependencies.stm32f4xx-hal]
+version = "0.2.3"
 features = ["stm32f407", "rt"]
 
 [dependencies.stm32f4-smoltcp]
