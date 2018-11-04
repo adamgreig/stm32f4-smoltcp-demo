@@ -15,7 +15,7 @@ default-features = false
 features = ["proto-ipv4", "socket-tcp"]
 
 [dependencies.stm32f4xx-hal]
-version = "0.2.2"
+version = "0.2.3"
 features = ["stm32f407", "rt"]
 
 [dependencies.stm32f4-smoltcp]

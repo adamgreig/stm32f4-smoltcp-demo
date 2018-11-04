@@ -12,12 +12,15 @@ use stm32f4_smoltcp::{EthernetDevice, RDes, RDesRing, TDes, TDesRing, ETH_BUF_SI
 
 use self::hal::gpio::Speed::VeryHigh;
 use self::hal::prelude::*;
+use self::hal::stm32::Interrupt;
 use self::hal::*;
 
 mod network;
 
 const ETH_NUM_TD: usize = 4;
 const ETH_NUM_RD: usize = 4;
+
+static mut TICKS: u32 = 0;
 
 static mut TDESRING: TDesRing = TDesRing {
     td: &mut [TDes::new(); ETH_NUM_TD],
@@ -115,6 +118,9 @@ fn main() -> ! {
     // Initialise ethernet
     ethdev.init(mac_addr.clone());
 
+    // Enable ethernet interrupts on received frames
+    ethdev.enable_rx_interrupt();
+
     // Wait until we have a link
     ethdev.block_until_link();
 
@@ -127,18 +133,32 @@ fn main() -> ! {
     let cidr = smoltcp::wire::IpCidr::Ipv4(ip_cidr);
     network::init(ethdev, mac_addr, cidr);
 
-    // Start systicks at 1ms to poll smoltcp
+    // Start systicks at 1ms to update timestamp used for networking
     systick_init(&mut p.SYST);
+
+    // Enable Ethernet peripheral interrupts
+    let mut nvic = p.NVIC;
+    nvic.enable(Interrupt::ETH);
+    unsafe { nvic.set_priority(Interrupt::ETH, 1) };
+    hal::stm32::NVIC::unpend(Interrupt::ETH);
 
     loop {
         cortex_m::asm::wfi();
     }
 }
 
+interrupt!(ETH, rx_int);
+
+fn rx_int() {
+    let dma = unsafe { &(*hal::stm32::ETHERNET_DMA::ptr()) };
+    network::poll(unsafe { TICKS });
+    dma.dmasr.write(|w| unsafe { w.bits(0x1_E7FF) });
+
+    hal::stm32::NVIC::unpend(Interrupt::ETH);
+}
+
 #[exception]
 fn SysTick() {
-    static mut TICKS: u32 = 0;
-    *TICKS = *TICKS + 1;
-
-    network::poll(*TICKS as i64);
+    unsafe { TICKS += 1 };
+    network::poll(unsafe { TICKS });
 }

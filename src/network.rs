@@ -77,7 +77,7 @@ pub fn init<'a>(eth_dev: EthernetDevice, mac_addr: EthernetAddress, ip_addr: IpC
 /// Poll network stack.
 ///
 /// Arrange for this function to be called frequently.
-pub fn poll(time_ms: i64) {
+pub fn poll(time_ms: u32) {
     // Unsafe required to access static mut NETWORK.
     // Since the entire poll is run in an interrupt-free context no
     // other access to NETWORK can occur.
@@ -105,7 +105,7 @@ pub fn poll(time_ms: i64) {
         }
 
         // Poll smoltcp
-        let timestamp = Instant::from_millis(time_ms);
+        let timestamp = Instant::from_millis(i64::from(time_ms));
         match NETWORK.eth_iface.as_mut().unwrap().poll(sockets, timestamp) {
             Ok(_) | Err(smoltcp::Error::Exhausted) => (),
             Err(_) => (),
