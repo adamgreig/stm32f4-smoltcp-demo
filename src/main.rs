@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-extern crate panic_abort;
+extern crate panic_halt;
 
 pub extern crate stm32f4xx_hal as hal;
 
