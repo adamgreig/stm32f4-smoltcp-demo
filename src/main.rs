@@ -105,15 +105,15 @@ fn main() -> ! {
     let gpiob = dp.GPIOB.split();
     let gpioc = dp.GPIOC.split();
 
-    let _a1 = gpioa.pa1.set_speed(VeryHigh).into_alternate_af11();
-    let _a2 = gpioa.pa2.set_speed(VeryHigh).into_alternate_af11();
-    let _a7 = gpioa.pa7.set_speed(VeryHigh).into_alternate_af11();
-    let _b11 = gpiob.pb11.set_speed(VeryHigh).into_alternate_af11();
-    let _b12 = gpiob.pb12.set_speed(VeryHigh).into_alternate_af11();
-    let _b13 = gpiob.pb13.set_speed(VeryHigh).into_alternate_af11();
-    let _c1 = gpioc.pc1.set_speed(VeryHigh).into_alternate_af11();
-    let _c4 = gpioc.pc4.set_speed(VeryHigh).into_alternate_af11();
-    let _c5 = gpioc.pc5.set_speed(VeryHigh).into_alternate_af11();
+    let _a1 = gpioa.pa1.into_alternate_af11().set_speed(VeryHigh);
+    let _a2 = gpioa.pa2.into_alternate_af11().set_speed(VeryHigh);
+    let _a7 = gpioa.pa7.into_alternate_af11().set_speed(VeryHigh);
+    let _b11 = gpiob.pb11.into_alternate_af11().set_speed(VeryHigh);
+    let _b12 = gpiob.pb12.into_alternate_af11().set_speed(VeryHigh);
+    let _b13 = gpiob.pb13.into_alternate_af11().set_speed(VeryHigh);
+    let _c1 = gpioc.pc1.into_alternate_af11().set_speed(VeryHigh);
+    let _c4 = gpioc.pc4.into_alternate_af11().set_speed(VeryHigh);
+    let _c5 = gpioc.pc5.into_alternate_af11().set_speed(VeryHigh);
 
     // Initialise ethernet
     ethdev.init(mac_addr.clone());
@@ -147,9 +147,8 @@ fn main() -> ! {
     }
 }
 
-interrupt!(ETH, rx_int);
-
-fn rx_int() {
+#[interrupt]
+fn ETH() {
     let dma = unsafe { &(*hal::stm32::ETHERNET_DMA::ptr()) };
     network::poll(unsafe { TICKS });
     dma.dmasr.write(|w| unsafe { w.bits(0x1_E7FF) });
