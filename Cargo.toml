@@ -6,7 +6,7 @@ edition = "2018"
 
 [dependencies]
 cortex-m = "0.5.8"
-cortex-m-rt = "0.6.5"
+cortex-m-rt = "0.6.8"
 panic-halt = "0.2.0"
 
 [dependencies.smoltcp]
@@ -15,7 +15,7 @@ default-features = false
 features = ["proto-ipv4", "socket-tcp"]
 
 [dependencies.stm32f4xx-hal]
-version = "0.2.4"
+version = "0.3.0"
 features = ["stm32f407", "rt"]
 
 [dependencies.stm32f4-smoltcp]
