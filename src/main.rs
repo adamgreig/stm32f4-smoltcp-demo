@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-extern crate panic_halt;
+extern crate panic_semihosting;
 
 pub extern crate stm32f4xx_hal as hal;
 
@@ -34,6 +34,8 @@ static mut RDESRING: RDesRing = RDesRing {
     rdidx: 0,
 };
 
+const PTP_MASTER: bool = false;
+
 fn rcc_init(p: &mut stm32::Peripherals) {
     let rcc = &p.RCC;
     let syscfg = &p.SYSCFG;
@@ -57,7 +59,7 @@ fn rcc_init(p: &mut stm32::Peripherals) {
 
 /// Set up the systick to provide a 1ms timebase
 fn systick_init(syst: &mut stm32::SYST) {
-    syst.set_reload((168_000_000 / 8) / 1000);
+    syst.set_reload((100_000_000 / 8) / 1000);
     syst.clear_current();
     syst.set_clock_source(cortex_m::peripheral::syst::SystClkSource::External);
     syst.enable_interrupt();
@@ -73,13 +75,19 @@ fn main() -> ! {
 
     let rcc = dp.RCC;
 
+    rcc.cfgr.modify(|_, w| w.mco2().hse());
+
     // Create ethernet driver
-    let mac_addr =
-        smoltcp::wire::EthernetAddress::from_bytes(&[0x02, 0x00, 0x00, 0x00, 0x00, 0x10]);
+    let mac_addr = if PTP_MASTER {
+        smoltcp::wire::EthernetAddress::from_bytes(&[0x02, 0x00, 0x00, 0x00, 0x00, 0x10])
+    } else {
+        smoltcp::wire::EthernetAddress::from_bytes(&[0x02, 0x00, 0x00, 0x00, 0x00, 0x11])
+    };
     let mut ethdev = unsafe {
         EthernetDevice::new(
             dp.ETHERNET_MAC,
             dp.ETHERNET_DMA,
+            dp.ETHERNET_PTP,
             &mut RDESRING,
             &mut TDESRING,
             0,
@@ -89,13 +97,18 @@ fn main() -> ! {
     // Constrain clock registers
     let rcc = rcc.constrain();
 
-    // Configure clock to 168 MHz (i.e. the maximum) and freeze it
-    let _ = rcc.cfgr.sysclk(168.mhz()).freeze();
+    // Configure clock to 100 MHz and freeze it
+    let _ = rcc.cfgr.use_hse(26.mhz())
+                    .sysclk(100.mhz())
+                    .freeze();
 
     // Status LED
-    let gpiod = dp.GPIOD.split();
-    let mut led = gpiod.pd13.into_push_pull_output();
+    let gpioe = dp.GPIOE.split();
+    let mut led = gpioe.pe7.into_push_pull_output();
     led.set_low();
+    // Traffic LED
+    let mut traffic_led = gpioe.pe9.into_push_pull_output();
+    traffic_led.set_low();
 
     // Configure ethernet related GPIO:
     // GPIOA 1, 2, 7
@@ -115,11 +128,18 @@ fn main() -> ! {
     let _c4 = gpioc.pc4.into_alternate_af11().set_speed(VeryHigh);
     let _c5 = gpioc.pc5.into_alternate_af11().set_speed(VeryHigh);
 
+    // Configure PTP PPS output
+    let _pps = gpiob.pb5.into_alternate_af11().set_speed(VeryHigh);
+
+    // MCO2
+    let _mco2 = gpioc.pc9.into_alternate_af0().set_speed(VeryHigh);
+
     // Initialise ethernet
     ethdev.init(mac_addr.clone());
 
-    // Enable ethernet interrupts on received frames
+    // Enable ethernet interrupts
     ethdev.enable_rx_interrupt();
+    ethdev.enable_tx_interrupt();
 
     // Wait until we have a link
     ethdev.block_until_link();
@@ -128,7 +148,11 @@ fn main() -> ! {
     led.set_high();
 
     // Create network interface
-    let ip_addr = smoltcp::wire::Ipv4Address::from_bytes(&[192, 168, 2, 101]);
+    let ip_addr = if PTP_MASTER {
+        smoltcp::wire::Ipv4Address::from_bytes(&[192, 168, 2, 20])
+    } else {
+        smoltcp::wire::Ipv4Address::from_bytes(&[192, 168, 2, 21])
+    };
     let ip_cidr = smoltcp::wire::Ipv4Cidr::new(ip_addr, 24);
     let cidr = smoltcp::wire::IpCidr::Ipv4(ip_cidr);
     network::init(ethdev, mac_addr, cidr);
@@ -149,15 +173,47 @@ fn main() -> ! {
 
 #[interrupt]
 fn ETH() {
-    let dma = unsafe { &(*hal::stm32::ETHERNET_DMA::ptr()) };
-    network::poll(unsafe { TICKS });
-    dma.dmasr.write(|w| unsafe { w.bits(0x1_E7FF) });
-
     hal::stm32::NVIC::unpend(Interrupt::ETH);
+    let dma = unsafe { &(*hal::stm32::ETHERNET_DMA::ptr()) };
+    let dmasr = dma.dmasr.read();
+
+    // Handle packet reception interrupt
+    if dmasr.rs().bit_is_set() {
+        network::poll(unsafe { TICKS });
+        dma.dmasr.write(|w| w.rs().set_bit());
+    }
+
+    // Handle packet transmission interrupt
+    if dmasr.ts().bit_is_set() {
+
+        let ptr = hal::stm32::GPIOE::ptr();
+        match unsafe { (*ptr).odr.read().odr9() } {
+            hal::stm32::gpioi::odr::ODR15R::HIGH => {
+                unsafe { (*ptr).bsrr.write(|w| w.br9().set_bit()) };
+            },
+            hal::stm32::gpioi::odr::ODR15R::LOW => {
+                unsafe { (*ptr).bsrr.write(|w| w.bs9().set_bit()) };
+            },
+        }
+
+        match unsafe { TDESRING.last_interrupt() } {
+            Some(tdes) => network::tx_complete(tdes),
+            None => (),
+        };
+        dma.dmasr.write(|w| w.ts().set_bit());
+    }
 }
 
 #[exception]
 fn SysTick() {
+    static mut LAST_SYNC: u32 = 0;
+
     unsafe { TICKS += 1 };
+
+    if PTP_MASTER && unsafe { TICKS } - *LAST_SYNC >= 1000 {
+        network::send_ptp_sync();
+        *LAST_SYNC = unsafe { TICKS };
+    }
+
     network::poll(unsafe { TICKS });
 }
