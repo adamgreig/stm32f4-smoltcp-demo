@@ -1,4 +1,5 @@
 use core::convert::TryInto;
+use core::ops;
 
 use cortex_m;
 use smoltcp::iface::{EthernetInterface, EthernetInterfaceBuilder, Neighbor, NeighborCache};
@@ -39,8 +40,116 @@ impl PTPTimestamp {
         }
     }
 
+    pub fn rationalise(&mut self) {
+        while self.nanos > 1_000_000_000 {
+            self.seconds += 1;
+            self.nanos -= 1_000_000_000;
+        }
+        while self.nanos < -1_000_000_000 {
+            self.seconds -= 1;
+            self.nanos += 1_000_000_000;
+        }
+    }
+
     pub const fn zero() -> PTPTimestamp {
         PTPTimestamp { seconds: 0, nanos: 0 }
+    }
+
+    pub fn halve(&mut self) {
+        if self.seconds & 1 == 1 {
+            self.nanos += 1_000_000_000;
+        }
+        self.seconds /= 2;
+        self.nanos /= 2;
+    }
+
+    pub fn to_f32(&self) -> f32 {
+        self.seconds as f32 + (self.nanos as f32)/1e9
+    }
+}
+
+impl ops::Add<PTPTimestamp> for PTPTimestamp {
+    type Output = PTPTimestamp;
+
+    fn add(self, rhs: PTPTimestamp) -> PTPTimestamp {
+        let mut rv = PTPTimestamp::zero();
+        rv.seconds = self.seconds + rhs.seconds;
+        rv.nanos = self.nanos + rhs.nanos;
+        rv.rationalise();
+        rv
+    }
+}
+
+impl ops::Add<&PTPTimestamp> for &PTPTimestamp {
+    type Output = PTPTimestamp;
+    fn add(self, rhs: &PTPTimestamp) -> PTPTimestamp {
+        (*self).add(*rhs)
+    }
+}
+
+impl ops::Add<&PTPTimestamp> for PTPTimestamp {
+    type Output = PTPTimestamp;
+    fn add(self, rhs: &PTPTimestamp) -> PTPTimestamp {
+        self.add(*rhs)
+    }
+}
+
+impl ops::Add<PTPTimestamp> for &PTPTimestamp {
+    type Output = PTPTimestamp;
+    fn add(self, rhs: PTPTimestamp) -> PTPTimestamp {
+        (*self).add(rhs)
+    }
+}
+
+impl ops::Sub<PTPTimestamp> for PTPTimestamp {
+    type Output = PTPTimestamp;
+
+    fn sub(self, rhs: PTPTimestamp) -> PTPTimestamp {
+        let mut rv = PTPTimestamp::zero();
+        rv.seconds = self.seconds - rhs.seconds;
+        rv.nanos = self.nanos - rhs.nanos;
+        rv.rationalise();
+        rv
+    }
+}
+
+impl ops::Sub<&PTPTimestamp> for &PTPTimestamp {
+    type Output = PTPTimestamp;
+    fn sub(self, rhs: &PTPTimestamp) -> PTPTimestamp {
+        (*self).sub(*rhs)
+    }
+}
+
+impl ops::Sub<&PTPTimestamp> for PTPTimestamp {
+    type Output = PTPTimestamp;
+    fn sub(self, rhs: &PTPTimestamp) -> PTPTimestamp {
+        self.sub(*rhs)
+    }
+}
+
+impl ops::Sub<PTPTimestamp> for &PTPTimestamp {
+    type Output = PTPTimestamp;
+    fn sub(self, rhs: PTPTimestamp) -> PTPTimestamp {
+        (*self).sub(rhs)
+    }
+}
+
+impl ops::Neg for PTPTimestamp {
+    type Output = PTPTimestamp;
+
+    fn neg(self) -> PTPTimestamp {
+        let mut rv = self.clone();
+        rv.seconds = -rv.seconds;
+        rv.nanos = -rv.nanos;
+        rv.rationalise();
+        rv
+    }
+}
+
+impl ops::Neg for &PTPTimestamp {
+    type Output = PTPTimestamp;
+    fn neg(self) -> PTPTimestamp {
+        (*self).neg()
     }
 }
 
@@ -50,6 +159,9 @@ struct PTPTimestamps {
     t2: Option<PTPTimestamp>,
     t3: Option<PTPTimestamp>,
     t4: Option<PTPTimestamp>,
+    last_t1: Option<PTPTimestamp>,
+    last_t2: Option<PTPTimestamp>,
+    addend: u32,
 }
 
 impl PTPTimestamps {
@@ -59,34 +171,86 @@ impl PTPTimestamps {
             t2: None,
             t3: None,
             t4: None,
+            last_t1: None,
+            last_t2: None,
+            addend: 1<<31,
         }
     }
 
     /// Compute the time offset when all four timestamps are available
     pub fn offset(&self) -> Option<PTPTimestamp> {
-        let mut off = PTPTimestamp::zero();
         match (&self.t1, &self.t2, &self.t3, &self.t4) {
             (Some(t1), Some(t2), Some(t3), Some(t4)) => {
-                off.seconds = -(t2.seconds - t1.seconds - t4.seconds + t3.seconds) / 2;
-                off.nanos = -(t2.nanos - t1.nanos - t4.nanos + t3.nanos) / 2;
-                while off.nanos > 1_000_000_000 {
-                    off.seconds += 1;
-                    off.nanos -= 1_000_000_000;
-                }
-                while off.nanos < -1_000_000_000 {
-                    off.seconds -= 1;
-                    off.nanos += 1_000_000_000;
-                }
-
+                let mut off = -(t2 - t1 - t4 + t3);
+                off.halve();
                 Some(off)
             },
             _ => None
         }
     }
 
+    pub fn update(&mut self, ptp: &hal::stm32::ethernet_ptp::RegisterBlock) {
+        match self.offset() {
+            Some(off) => {
+                self.coarse_update(off, ptp);
+                if off.seconds == 0 {
+                    self.fine_update(off, ptp);
+                }
+            },
+            None => (),
+        }
+        self.last_t1 = self.t1;
+        self.last_t2 = self.t2;
+        self.t1 = None;
+        self.t2 = None;
+        self.t3 = None;
+        self.t4 = None;
+    }
+
+    fn fine_update(&mut self, off: PTPTimestamp, ptp: &hal::stm32::ethernet_ptp::RegisterBlock) {
+        match (&self.t1, &self.t2, &self.last_t1, &self.last_t2) {
+            (Some(t1), Some(t2), Some(last_t1), Some(last_t2)) => {
+                let dm = t1 - last_t1;
+                let _dc = t2 - last_t2;
+                let error = off.to_f32() / dm.to_f32();
+                if error > -0.01 && error < 0.01 {
+                    self.addend = (self.addend as f32 * (1.0 + error)) as u32;
+                    self.write_addend(ptp);
+                }
+            },
+            _ => ()
+        }
+    }
+
+    fn write_addend(&self, ptp: &hal::stm32::ethernet_ptp::RegisterBlock) {
+        unsafe {
+            ptp.ptptsar.write(|w| w.tsa().bits(self.addend));
+            ptp.ptptscr.modify(|_, w| w.ttsaru().set_bit());
+            while ptp.ptptscr.read().ttsaru().bit_is_set() {}
+        }
+    }
+
+    /// Perform coarse update of given offset
+    fn coarse_update(&self, offset: PTPTimestamp, ptp: &hal::stm32::ethernet_ptp::RegisterBlock) {
+        if offset.seconds < 0 || (offset.seconds == 0 && offset.nanos < 0) {
+            unsafe {
+                ptp.ptptshur.write(|w| w.tsus().bits(-offset.seconds as u32));
+                ptp.ptptslur.write(|w| w.tsupns().set_bit().tsuss().bits(-offset.nanos as u32));
+            }
+        } else {
+            unsafe {
+                ptp.ptptshur.write(|w| w.tsus().bits(offset.seconds as u32));
+                ptp.ptptslur.write(|w| w.tsupns().clear_bit().tsuss().bits(offset.nanos as u32));
+            }
+        }
+        ptp.ptptscr.modify(|_, w| w.tsstu().set_bit());
+        while ptp.ptptscr.read().tsstu().bit_is_set() {}
+        self.write_addend(ptp);
+    }
+
     /// Write all timestamps and computed offset into a u8 array for debug
-    pub fn to_bytes(&self) -> [u8; 40] {
-        let mut buf = [0u8; 40];
+    pub fn to_bytes(&self) -> [u8; 60] {
+        let mut buf = [0u8; 60];
         if let Some(t1) = self.t1 {
             buf[0..4].copy_from_slice(&t1.seconds.to_le_bytes()[..]);
             buf[4..8].copy_from_slice(&t1.nanos.to_le_bytes()[..]);
@@ -107,14 +271,16 @@ impl PTPTimestamps {
             buf[32..36].copy_from_slice(&to.seconds.to_le_bytes()[..]);
             buf[36..40].copy_from_slice(&to.nanos.to_le_bytes()[..]);
         }
+        if let Some(last_t1) = self.last_t1 {
+            buf[40..44].copy_from_slice(&last_t1.seconds.to_le_bytes()[..]);
+            buf[44..48].copy_from_slice(&last_t1.nanos.to_le_bytes()[..]);
+        }
+        if let Some(last_t2) = self.last_t2 {
+            buf[48..52].copy_from_slice(&last_t2.seconds.to_le_bytes()[..]);
+            buf[52..56].copy_from_slice(&last_t2.nanos.to_le_bytes()[..]);
+        }
+        buf[56..60].copy_from_slice(&self.addend.to_le_bytes()[..]);
         buf
-    }
-
-    pub fn clear(&mut self) {
-        self.t1 = None;
-        self.t2 = None;
-        self.t3 = None;
-        self.t4 = None;
     }
 }
 
@@ -305,31 +471,15 @@ pub fn poll(time_ms: u32) {
                             // Store contained time as t4
                             NETWORK.ptp_timestamps.t4 = PTPTimestamp::from_packet(data);
 
-                            // Process {t1, t2, t3, t4} to update our local clock
-                            let toff = NETWORK.ptp_timestamps.offset();
-                            match toff {
-                                Some(off) => {
-                                    let ptp = &(*hal::stm32::ETHERNET_PTP::ptr());
-                                    if off.seconds < 0 || (off.seconds == 0 && off.nanos < 0) {
-                                        ptp.ptptshur.write(|w| w.bits(-off.seconds as u32));
-                                        ptp.ptptslur.write(|w| w.bits((1<<31) | (-off.nanos as u32)));
-                                    } else {
-                                        ptp.ptptshur.write(|w| w.bits(off.seconds as u32));
-                                        ptp.ptptslur.write(|w| w.bits(off.nanos as u32));
-                                    }
-                                    ptp.ptptscr.modify(|_, w| w.tsstu().set_bit());
-                                },
-                                None => (),
-                            }
-
                             // Send debug information
                             let buf = NETWORK.ptp_timestamps.to_bytes();
                             let ep = IpEndpoint::new(
                                 IpAddress::Ipv4(Ipv4Address::new(192, 168, 2, 2)), 10000);
                             socket.send_slice(&buf[..], ep).unwrap();
 
-                            // Reset stored timestamps
-                            NETWORK.ptp_timestamps.clear();
+                            // Process {t1, t2, t3, t4} to update our local clock
+                            let ptp = &(*hal::stm32::ETHERNET_PTP::ptr());
+                            NETWORK.ptp_timestamps.update(ptp);
                         },
                         _ => (),
                     }
