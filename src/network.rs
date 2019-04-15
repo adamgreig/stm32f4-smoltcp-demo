@@ -214,7 +214,7 @@ impl PTPTimestamps {
                 let _dc = t2 - last_t2;
                 let error = off.to_f32() / dm.to_f32();
                 if error > -0.01 && error < 0.01 {
-                    self.addend = (self.addend as f32 * (1.0 + error)) as u32;
+                    self.addend = (self.addend as f32 * (1.0 + error/5.0)) as u32;
                     self.write_addend(ptp);
                 }
             },

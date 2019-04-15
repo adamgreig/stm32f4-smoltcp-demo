@@ -21,7 +21,7 @@ def format_packet(data):
     return (f"t1={t1:+.09f} t2={t2:+.09f} t3={t3:+.09f} "
             f"t4={t4:+.09f} tO={to:+.09f} "
             f"last_t1={last_t1:+.09f} last_t2={last_t2:+.09f} "
-            f"addend={addend} ({addend_ppm:.02f}ppm) error={error:.04e}")
+            f"addend={addend} ({addend_ppm:.02f}ppm) error={error:+.04e}")
 
 
 def main():
